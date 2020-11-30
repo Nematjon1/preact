@@ -1,6 +1,10 @@
 import { act } from 'preact/test-utils';
-import { createElement, render, Fragment } from 'preact';
-import { setupScratch, teardown } from '../../../test/_util/helpers';
+import { createElement, render, Fragment, Component } from 'preact';
+import {
+	setupScratch,
+	teardown,
+	serializeHtml
+} from '../../../test/_util/helpers';
 import { useEffectAssertions } from './useEffectAssertions.test';
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 
@@ -97,10 +101,12 @@ describe('useLayoutEffect', () => {
 		function AutoResizeTextareaLayoutEffect(props) {
 			const ref = useRef(null);
 			useLayoutEffect(() => {
-				expect(scratch.innerHTML).to.equal(
-					`<div class="${props.value}"><p>${props.value}</p><textarea></textarea></div>`
-				);
-				expect(ref.current.isConnected).to.equal(true);
+				// IE & Edge put textarea's value as child of textarea when reading innerHTML so use
+				// cross browser serialize helper
+				const actualHtml = serializeHtml(scratch);
+				const expectedHTML = `<div class="${props.value}"><p>${props.value}</p><textarea></textarea></div>`;
+				expect(actualHtml).to.equal(expectedHTML);
+				expect(document.body.contains(ref.current)).to.equal(true);
 			});
 			return (
 				<Fragment>
@@ -125,12 +131,8 @@ describe('useLayoutEffect', () => {
 	it('should invoke layout effects after subtree is fully connected', () => {
 		let ref;
 		let layoutEffect = sinon.spy(() => {
-			expect(ref.current.isConnected).to.equal(true, 'ref.current.isConnected');
-			expect(ref.current.parentNode).to.not.be.undefined;
-			expect(ref.current.parentNode.isConnected).to.equal(
-				true,
-				'ref.current.parentNode.isConnected'
-			);
+			const isConnected = document.body.contains(ref.current);
+			expect(isConnected).to.equal(true, 'isConnected');
 		});
 
 		function Inner() {
@@ -226,5 +228,99 @@ describe('useLayoutEffect', () => {
 			'<button>next</button><div><p>Foo</p></div>',
 			'calledBarCleanup'
 		);
+	});
+
+	it('should throw an error upwards', () => {
+		const spy = sinon.spy();
+		let errored = false;
+
+		const Page1 = () => {
+			const [state, setState] = useState('loading');
+			useLayoutEffect(() => {
+				setState('loaded');
+			}, []);
+			return <p>{state}</p>;
+		};
+
+		const Page2 = () => {
+			useLayoutEffect(() => {
+				throw new Error('err');
+			}, []);
+			return <p>invisible</p>;
+		};
+
+		class App extends Component {
+			componentDidCatch(err) {
+				spy();
+				errored = err;
+				this.forceUpdate();
+			}
+
+			render(props, state) {
+				if (errored) {
+					return <p>Error</p>;
+				}
+
+				return <Fragment>{props.page === 1 ? <Page1 /> : <Page2 />}</Fragment>;
+			}
+		}
+
+		act(() => render(<App page={1} />, scratch));
+		expect(spy).to.not.be.called;
+		expect(scratch.innerHTML).to.equal('<p>loaded</p>');
+
+		act(() => render(<App page={2} />, scratch));
+		expect(spy).to.be.calledOnce;
+		expect(scratch.innerHTML).to.equal('<p>Error</p>');
+		errored = false;
+
+		act(() => render(<App page={1} />, scratch));
+		expect(spy).to.be.calledOnce;
+		expect(scratch.innerHTML).to.equal('<p>loaded</p>');
+	});
+
+	it('should throw an error upwards from return', () => {
+		const spy = sinon.spy();
+		let errored = false;
+
+		const Page1 = () => {
+			const [state, setState] = useState('loading');
+			useLayoutEffect(() => {
+				setState('loaded');
+			}, []);
+			return <p>{state}</p>;
+		};
+
+		const Page2 = () => {
+			useLayoutEffect(() => {
+				return () => {
+					throw new Error('err');
+				};
+			}, []);
+			return <p>Load</p>;
+		};
+
+		class App extends Component {
+			componentDidCatch(err) {
+				spy();
+				errored = err;
+				this.forceUpdate();
+			}
+
+			render(props, state) {
+				if (errored) {
+					return <p>Error</p>;
+				}
+
+				return <Fragment>{props.page === 1 ? <Page1 /> : <Page2 />}</Fragment>;
+			}
+		}
+
+		act(() => render(<App page={2} />, scratch));
+		expect(scratch.innerHTML).to.equal('<p>Load</p>');
+
+		act(() => render(<App page={1} />, scratch));
+		expect(spy).to.be.calledOnce;
+		expect(scratch.innerHTML).to.equal('<p>Error</p>');
 	});
 });

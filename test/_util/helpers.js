@@ -1,9 +1,20 @@
 import { createElement, options } from 'preact';
-import { assign } from '../../src/util';
 import { clearLog, getLog } from './logCall';
 import { teardown as testUtilTeardown } from 'preact/test-utils';
 
 /** @jsx createElement */
+
+/**
+ * Assign properties from `props` to `obj`
+ * @template O, P The obj and props types
+ * @param {O} obj The object to copy properties to
+ * @param {P} props The object to copy properties from
+ * @returns {O & P}
+ */
+function assign(obj, props) {
+	for (let i in props) obj[i] = props[i];
+	return /** @type {O & P} */ (obj);
+}
 
 export function supportsPassiveEvents() {
 	let supported = false;
@@ -91,8 +102,13 @@ function serializeDomTree(node) {
 		for (let i = 0; i < attrs.length; i++) {
 			const name = attrs[i];
 			let value = node.getAttribute(name);
+
+			// don't render attributes with null or undefined values
 			if (value == null) continue;
+
+			// normalize empty class attribute
 			if (!value && name === 'class') continue;
+
 			str += ' ' + name;
 			value = encodeEntities(value);
 
@@ -103,12 +119,19 @@ function serializeDomTree(node) {
 			str += '="' + value + '"';
 		}
 		str += '>';
+
+		// For elements that don't have children (e.g. <wbr />) don't descend.
 		if (!VOID_ELEMENTS.test(node.localName)) {
-			let child = node.firstChild;
-			while (child) {
-				str += serializeDomTree(child);
-				child = child.nextSibling;
+			// IE puts the value of a textarea as its children while other browsers don't.
+			// Normalize those differences by forcing textarea to not have children.
+			if (node.localName != 'textarea') {
+				let child = node.firstChild;
+				while (child) {
+					str += serializeDomTree(child);
+					child = child.nextSibling;
+				}
 			}
+
 			str += '</' + node.localName + '>';
 		}
 		return str;
@@ -122,7 +145,7 @@ function serializeDomTree(node) {
  */
 export function createEvent(name) {
 	// Modern browsers
-	if (typeof Event === 'function') {
+	if (typeof Event == 'function') {
 		return new Event(name);
 	}
 
@@ -197,6 +220,8 @@ export function teardown(scratch) {
 	if (getLog().length > 0) {
 		clearLog();
 	}
+
+	restoreElementAttributes();
 }
 
 const Foo = () => 'd';
@@ -232,9 +257,46 @@ export function sortAttributes(html) {
 
 export const spyAll = obj =>
 	Object.keys(obj).forEach(key => sinon.spy(obj, key));
+
 export const resetAllSpies = obj =>
 	Object.keys(obj).forEach(key => {
 		if (obj[key].args) {
 			obj[key].resetHistory();
 		}
 	});
+
+let attributesSpy, originalAttributesPropDescriptor;
+
+export function spyOnElementAttributes() {
+	const test = Object.getOwnPropertyDescriptor(Element.prototype, 'attributes');
+
+	// IE11 doesn't correctly restore the prototype methods so we have to check
+	// whether this prototype method is already a sinon spy.
+	if (!attributesSpy && !(test && test.get && test.get.isSinonProxy)) {
+		if (!originalAttributesPropDescriptor) {
+			originalAttributesPropDescriptor = Object.getOwnPropertyDescriptor(
+				Element.prototype,
+				'attributes'
+			);
+		}
+
+		attributesSpy = sinon.spy(Element.prototype, 'attributes', ['get']);
+	} else if (test && test.get && test.get.isSinonProxy) {
+		// Due to IE11 not resetting we will do this manually when it is a proxy.
+		test.get.resetHistory();
+	}
+
+	return attributesSpy || test;
+}
+
+function restoreElementAttributes() {
+	if (originalAttributesPropDescriptor) {
+		// Workaround bug in Sinon where getter/setter spies don't get auto-restored
+		Object.defineProperty(
+			Element.prototype,
+			'attributes',
+			originalAttributesPropDescriptor
+		);
+		attributesSpy = null;
+	}
+}

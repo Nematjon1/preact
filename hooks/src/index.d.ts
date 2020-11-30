@@ -40,7 +40,7 @@ export function useReducer<S, A, I>(
 	init: (arg: I) => S
 ): [S, (action: A) => void];
 
-type PropRef<T> = { readonly current?: T };
+type PropRef<T> = { current: T };
 type Ref<T> = { current: T };
 
 /**
@@ -50,7 +50,7 @@ type Ref<T> = { current: T };
  * Note that `useRef()` is useful for more than the `ref` attribute. It’s handy for keeping any mutable
  * value around similar to how you’d use instance fields in classes.
  */
-export function useRef<T>(initialValue: T): Ref<T>;
+export function useRef<T>(initialValue?: T | null): Ref<T>;
 
 /**
  * `useRef` without an initial value is the special case handling `ref` props.
@@ -106,7 +106,8 @@ export function useCallback<T extends Function>(callback: T, inputs: Inputs): T;
  * This optimization helps to avoid expensive calculations on every render.
  * If no array is provided, a new value will be computed whenever a new function instance is passed as the first argument.
  */
-export function useMemo<T>(factory: () => T, inputs?: Inputs): T;
+// for `inputs`, allow undefined, but don't make it optional as that is very likely a mistake
+export function useMemo<T>(factory: () => T, inputs: Inputs | undefined): T;
 
 /**
  * Returns the current context value, as given by the nearest context provider for the given context.
@@ -122,7 +123,8 @@ export function useContext<T>(context: PreactContext<T>): T;
  * @param value Custom hook name or object that is passed to formatter
  * @param formatter Formatter to modify value before sending it to the devtools
  */
-export function useDebugValue<T>(
-	value: T,
-	formatter?: (value: T) => string | number
-): void;
+export function useDebugValue<T>(value: T, formatter?: (value: T) => any): void;
+
+export function useErrorBoundary(
+	callback?: (error: any) => Promise<void> | void
+): [any, () => void];

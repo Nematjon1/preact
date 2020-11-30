@@ -21,9 +21,6 @@ describe('components', () => {
 	it('should have "isReactComponent" property', () => {
 		let Comp = new React.Component();
 		expect(Comp.isReactComponent).to.deep.equal({});
-
-		let Pure = new React.PureComponent();
-		expect(Pure.isReactComponent).to.deep.equal({});
 	});
 
 	it('should be sane', () => {
@@ -59,6 +56,9 @@ describe('components', () => {
 			componentWillReceiveProps(newProps) {
 				props = newProps;
 			}
+			render() {
+				return this.props.children;
+			}
 		}
 
 		class Parent extends React.Component {
@@ -73,108 +73,6 @@ describe('components', () => {
 
 		expect(props).to.exist.and.deep.equal({
 			children: 'second'
-		});
-	});
-
-	describe('PureComponent', () => {
-		it('should be a class', () => {
-			expect(React)
-				.to.have.property('PureComponent')
-				.that.is.a('function');
-		});
-
-		it('should pass props in constructor', () => {
-			let spy = sinon.spy();
-			class Foo extends React.PureComponent {
-				constructor(props) {
-					super(props);
-					spy(this.props, props);
-				}
-			}
-
-			React.render(<Foo foo="bar" />, scratch);
-
-			let expected = { foo: 'bar' };
-			expect(spy).to.be.calledWithMatch(expected, expected);
-		});
-
-		it('should ignore the __source variable', () => {
-			const pureSpy = sinon.spy();
-			const appSpy = sinon.spy();
-			let set;
-			class Pure extends React.PureComponent {
-				render() {
-					pureSpy();
-					return <div>Static</div>;
-				}
-			}
-
-			const App = () => {
-				const [, setState] = React.useState(0);
-				appSpy();
-				set = setState;
-				return <Pure __source={{}} />;
-			};
-
-			React.render(<App />, scratch);
-			expect(appSpy).to.be.calledOnce;
-			expect(pureSpy).to.be.calledOnce;
-
-			set(1);
-			rerender();
-			expect(appSpy).to.be.calledTwice;
-			expect(pureSpy).to.be.calledOnce;
-		});
-
-		it('should only re-render when props or state change', () => {
-			class C extends React.PureComponent {
-				render() {
-					return <div />;
-				}
-			}
-			let spy = sinon.spy(C.prototype, 'render');
-
-			let inst = React.render(<C />, scratch);
-			expect(spy).to.have.been.calledOnce;
-			spy.resetHistory();
-
-			inst = React.render(<C />, scratch);
-			expect(spy).not.to.have.been.called;
-
-			let b = { foo: 'bar' };
-			inst = React.render(<C a="a" b={b} />, scratch);
-			expect(spy).to.have.been.calledOnce;
-			spy.resetHistory();
-
-			inst = React.render(<C a="a" b={b} />, scratch);
-			expect(spy).not.to.have.been.called;
-
-			inst.setState({});
-			rerender();
-			expect(spy).not.to.have.been.called;
-
-			inst.setState({ a: 'a', b });
-			rerender();
-			expect(spy).to.have.been.calledOnce;
-			spy.resetHistory();
-
-			inst.setState({ a: 'a', b });
-			rerender();
-			expect(spy).not.to.have.been.called;
-		});
-
-		it('should update when props are removed', () => {
-			let spy = sinon.spy();
-			class App extends React.PureComponent {
-				render() {
-					spy();
-					return <div>foo</div>;
-				}
-			}
-
-			React.render(<App a="foo" />, scratch);
-			React.render(<App />, scratch);
-			expect(spy).to.be.calledTwice;
 		});
 	});
 
@@ -317,6 +215,29 @@ describe('components', () => {
 			expect(inst.UNSAFE_componentWillUpdate).to.equal(
 				inst.UNSAFE_componentWillUpdate
 			);
+		});
+
+		it('should call UNSAFE_* methods through Suspense with wrapper component #2525', () => {
+			class Page extends React.Component {
+				UNSAFE_componentWillMount() {}
+				render() {
+					return <h1>Example</h1>;
+				}
+			}
+
+			const Wrapper = () => <Page />;
+
+			sinon.spy(Page.prototype, 'UNSAFE_componentWillMount');
+
+			React.render(
+				<React.Suspense fallback={<div>fallback</div>}>
+					<Wrapper />
+				</React.Suspense>,
+				scratch
+			);
+
+			expect(scratch.innerHTML).to.equal('<h1>Example</h1>');
+			expect(Page.prototype.UNSAFE_componentWillMount).to.have.been.called;
 		});
 	});
 });

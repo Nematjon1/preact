@@ -1,53 +1,59 @@
-import {
-	Component,
-	createElement,
-	_unmount as unmount,
-	options,
-	cloneElement
-} from 'preact';
-import { removeNode } from '../../src/util';
+import { Component, createElement, options, Fragment } from 'preact';
+import { assign } from './util';
 
 const oldCatchError = options._catchError;
 options._catchError = function(error, newVNode, oldVNode) {
-	if (error.then && oldVNode) {
+	if (error.then) {
 		/** @type {import('./internal').Component} */
 		let component;
 		let vnode = newVNode;
 
 		for (; (vnode = vnode._parent); ) {
 			if ((component = vnode._component) && component._childDidSuspend) {
-				if (oldVNode) {
+				if (newVNode._dom == null) {
 					newVNode._dom = oldVNode._dom;
 					newVNode._children = oldVNode._children;
 				}
-
-				component._childDidSuspend(error);
-				return; // Don't call oldCatchError if we found a Suspense
+				// Don't call oldCatchError if we found a Suspense
+				return component._childDidSuspend(error, newVNode);
 			}
 		}
 	}
-
 	oldCatchError(error, newVNode, oldVNode);
 };
 
-function detachDom(children) {
-	for (let i = 0; i < children.length; i++) {
-		let child = children[i];
-		if (child != null) {
-			if (typeof child.type !== 'function' && child._dom) {
-				removeNode(child._dom);
-			} else if (child._children) {
-				detachDom(child._children);
-			}
+function detachedClone(vnode) {
+	if (vnode) {
+		if (vnode._component && vnode._component.__hooks) {
+			vnode._component.__hooks._list.forEach(effect => {
+				if (typeof effect._cleanup == 'function') effect._cleanup();
+			});
+
+			vnode._component.__hooks = null;
 		}
+
+		vnode = assign({}, vnode);
+		vnode._component = null;
+		vnode._children = vnode._children && vnode._children.map(detachedClone);
 	}
+
+	return vnode;
+}
+
+function removeOriginal(vnode) {
+	if (vnode) {
+		vnode._original = null;
+		vnode._children = vnode._children && vnode._children.map(removeOriginal);
+	}
+	return vnode;
 }
 
 // having custom inheritance instead of a class here saves a lot of bytes
-export function Suspense(props) {
+export function Suspense() {
 	// we do not call super here to golf some bytes...
-	this._suspensions = [];
-	this._fallback = props.fallback;
+	this._pendingSuspensionCount = 0;
+	this._suspenders = null;
+	this._detachOnNextRender = null;
 }
 
 // Things we do here to save some bytes but are not proper JS inheritance:
@@ -57,45 +63,118 @@ Suspense.prototype = new Component();
 
 /**
  * @param {Promise} promise The thrown promise
+ * @param {import('./internal').VNode<any, any>} suspendingVNode The suspending component
  */
-Suspense.prototype._childDidSuspend = function(promise) {
+Suspense.prototype._childDidSuspend = function(promise, suspendingVNode) {
+	const suspendingComponent = suspendingVNode._component;
+
 	/** @type {import('./internal').SuspenseComponent} */
 	const c = this;
-	c._suspensions.push(promise);
 
-	const onSuspensionComplete = () => {
-		// From https://twitter.com/Rich_Harris/status/1125850391155965952
-		c._suspensions[c._suspensions.indexOf(promise)] =
-			c._suspensions[c._suspensions.length - 1];
-		c._suspensions.pop();
+	if (c._suspenders == null) {
+		c._suspenders = [];
+	}
+	c._suspenders.push(suspendingComponent);
 
-		if (c._suspensions.length == 0) {
-			// If fallback is null, don't try to unmount it
-			// `unmount` expects a real VNode, not null values
-			if (c._fallback) {
-				// Unmount current children (should be fallback)
-				unmount(c._fallback);
-			}
-			c._vnode._dom = null;
+	const resolve = suspended(c._vnode);
 
-			c._vnode._children = c.state._parkedChildren;
-			c.setState({ _parkedChildren: null });
+	let resolved = false;
+	const onResolved = () => {
+		if (resolved) return;
+
+		resolved = true;
+		suspendingComponent.componentWillUnmount =
+			suspendingComponent._suspendedComponentWillUnmount;
+
+		if (resolve) {
+			resolve(onSuspensionComplete);
+		} else {
+			onSuspensionComplete();
 		}
 	};
 
-	if (c.state._parkedChildren == null) {
-		c._fallback = c._fallback && cloneElement(c._fallback);
-		c.setState({ _parkedChildren: c._vnode._children });
-		detachDom(c._vnode._children);
-		c._vnode._children = [];
-	}
+	suspendingComponent._suspendedComponentWillUnmount =
+		suspendingComponent.componentWillUnmount;
+	suspendingComponent.componentWillUnmount = () => {
+		onResolved();
 
-	promise.then(onSuspensionComplete, onSuspensionComplete);
+		if (suspendingComponent._suspendedComponentWillUnmount) {
+			suspendingComponent._suspendedComponentWillUnmount();
+		}
+	};
+
+	const onSuspensionComplete = () => {
+		if (!--c._pendingSuspensionCount) {
+			c._vnode._children[0] = removeOriginal(c.state._suspended);
+			c.setState({ _suspended: (c._detachOnNextRender = null) });
+
+			let suspended;
+			while ((suspended = c._suspenders.pop())) {
+				suspended.forceUpdate();
+			}
+		}
+	};
+
+	/**
+	 * We do not set `suspended: true` during hydration because we want the actual markup
+	 * to remain on screen and hydrate it when the suspense actually gets resolved.
+	 * While in non-hydration cases the usual fallback -> component flow would occour.
+	 */
+	const wasHydrating = suspendingVNode._hydrating === true;
+	if (!wasHydrating && !c._pendingSuspensionCount++) {
+		c.setState({ _suspended: (c._detachOnNextRender = c._vnode._children[0]) });
+	}
+	promise.then(onResolved, onResolved);
+};
+
+Suspense.prototype.componentWillUnmount = function() {
+	this._suspenders = [];
 };
 
 Suspense.prototype.render = function(props, state) {
-	return state._parkedChildren ? this._fallback : props.children;
+	if (this._detachOnNextRender) {
+		// When the Suspense's _vnode was created by a call to createVNode
+		// (i.e. due to a setState further up in the tree)
+		// it's _children prop is null, in this case we "forget" about the parked vnodes to detach
+		if (this._vnode._children)
+			this._vnode._children[0] = detachedClone(this._detachOnNextRender);
+		this._detachOnNextRender = null;
+	}
+
+	// Wrap fallback tree in a VNode that prevents itself from being marked as aborting mid-hydration:
+	/** @type {import('./internal').VNode} */
+	const fallback =
+		state._suspended && createElement(Fragment, null, props.fallback);
+	if (fallback) fallback._hydrating = null;
+
+	return [
+		createElement(Fragment, null, state._suspended ? null : props.children),
+		fallback
+	];
 };
+
+/**
+ * Checks and calls the parent component's _suspended method, passing in the
+ * suspended vnode. This is a way for a parent (e.g. SuspenseList) to get notified
+ * that one of its children/descendants suspended.
+ *
+ * The parent MAY return a callback. The callback will get called when the
+ * suspension resolves, notifying the parent of the fact.
+ * Moreover, the callback gets function `unsuspend` as a parameter. The resolved
+ * child descendant will not actually get unsuspended until `unsuspend` gets called.
+ * This is a way for the parent to delay unsuspending.
+ *
+ * If the parent does not return a callback then the resolved vnode
+ * gets unsuspended immediately when it resolves.
+ *
+ * @param {import('./internal').VNode} vnode
+ * @returns {((unsuspend: () => void) => void)?}
+ */
+export function suspended(vnode) {
+	/** @type {import('./internal').Component} */
+	let component = vnode._parent._component;
+	return component && component._suspended && component._suspended(vnode);
+}
 
 export function lazy(loader) {
 	let prom;
@@ -107,7 +186,7 @@ export function lazy(loader) {
 			prom = loader();
 			prom.then(
 				exports => {
-					component = exports.default;
+					component = exports.default || exports;
 				},
 				e => {
 					error = e;

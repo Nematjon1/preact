@@ -5,14 +5,14 @@ import {
 	teardown,
 	getMixedArray,
 	mixedArrayHTML,
-	serializeHtml
+	serializeHtml,
+	sortAttributes,
+	spyAll
 } from '../_util/helpers';
 import { div, span, p } from '../_util/dom';
 
 /** @jsx createElement */
 const h = createElement;
-
-let spyAll = obj => Object.keys(obj).forEach(key => sinon.spy(obj, key));
 
 function getAttributes(node) {
 	let attrs = {};
@@ -22,20 +22,6 @@ function getAttributes(node) {
 		}
 	}
 	return attrs;
-}
-
-// hacky normalization of attribute order across browsers.
-function sortAttributes(html) {
-	return html.replace(
-		/<([a-z0-9-]+)((?:\s[a-z0-9:_.-]+=".*?")+)((?:\s*\/)?>)/gi,
-		(s, pre, attrs, after) => {
-			let list = attrs
-				.match(/\s[a-z0-9:_.-]+=".*?"/gi)
-				.sort((a, b) => (a > b ? 1 : -1));
-			if (~after.indexOf('/')) after = '></' + pre + '>';
-			return '<' + pre + list.join('') + after;
-		}
-	);
 }
 
 describe('Components', () => {
@@ -127,6 +113,20 @@ describe('Components', () => {
 				);
 
 			expect(scratch.innerHTML).to.equal('<div foo="bar"></div>');
+		});
+
+		it('should not crash when setting state in constructor', () => {
+			class Foo extends Component {
+				constructor(props) {
+					super(props);
+					// the following line made `this._nextState !== this.state` be truthy prior to the fix for preactjs/preact#2638
+					this.state = {};
+					this.setState({ preact: 'awesome' });
+				}
+			}
+
+			expect(() => render(<Foo foo="bar" />, scratch)).not.to.throw();
+			rerender();
 		});
 
 		it('should not crash when setting state with cb in constructor', () => {
@@ -1766,7 +1766,7 @@ describe('Components', () => {
 			}
 		}
 
-		let condition = false;
+		let renderChildDiv = false;
 
 		let child;
 		class Child extends Component {
@@ -1775,7 +1775,7 @@ describe('Components', () => {
 			}
 			render() {
 				child = this;
-				if (!condition) return null;
+				if (!renderChildDiv) return null;
 				return <div class="child" />;
 			}
 		}
@@ -1788,43 +1788,30 @@ describe('Components', () => {
 			}
 		}
 
+		// TODO: Consider rewriting test to not rely on internal properties
+		// and instead capture user-facing bug that would occur if this
+		// behavior were broken
+		const getDom = c => ('__v' in c ? c.__v.__e : c._vnode._dom);
+
 		render(<App />, scratch);
-		expect(child._vnode._dom).to.equalNode(child.base);
+		expect(getDom(child)).to.equalNode(child.base);
 
 		app.forceUpdate();
-		expect(child._vnode._dom).to.equalNode(child.base);
+		expect(getDom(child)).to.equalNode(child.base);
 
 		parent.setState({});
-		condition = true;
+		renderChildDiv = true;
 		child.forceUpdate();
-		expect(child._vnode._dom).to.equalNode(child.base);
+		expect(getDom(child)).to.equalNode(child.base);
 		rerender();
 
-		expect(child._vnode._dom).to.equalNode(child.base);
+		expect(getDom(child)).to.equalNode(child.base);
 
-		condition = false;
+		renderChildDiv = false;
 		app.setState({});
 		child.forceUpdate();
 		rerender();
-		expect(child._vnode._dom).to.equalNode(child.base);
-	});
-
-	it('should update old dom on forceUpdate in a lifecycle', () => {
-		let i = 0;
-		class App extends Component {
-			componentWillReceiveProps() {
-				this.forceUpdate();
-			}
-			render() {
-				if (i++ == 0) return <div>foo</div>;
-				return <div>bar</div>;
-			}
-		}
-
-		render(<App />, scratch);
-		render(<App />, scratch);
-
-		expect(scratch.innerHTML).to.equal('<div>bar</div>');
+		expect(getDom(child)).to.equalNode(child.base);
 	});
 
 	// preact/#1323
@@ -2158,7 +2145,7 @@ describe('Components', () => {
 			toggleMaybeNull();
 			rerender();
 
-			expect(scratch.innerHTML).to.equal([p('child')].join(''));
+			expect(scratch.innerHTML).to.equal(p('child'));
 			expect(maybe.base).to.equalNode(null, 'toggleMaybe - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2176,7 +2163,7 @@ describe('Components', () => {
 			swapChildTag();
 			rerender();
 
-			expect(scratch.innerHTML).to.equal([span('child')].join(''));
+			expect(scratch.innerHTML).to.equal(span('child'));
 			expect(maybe.base).to.equalNode(null, 'swapChildTag - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2203,7 +2190,7 @@ describe('Components', () => {
 				scratch
 			);
 
-			expect(scratch.innerHTML).to.equal([p('child')].join(''));
+			expect(scratch.innerHTML).to.equal(p('child'));
 			expect(maybe.base).to.equalNode(null, 'initial - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2215,7 +2202,7 @@ describe('Components', () => {
 			swapChildTag();
 			rerender();
 
-			expect(scratch.innerHTML).to.equal([span('child')].join(''));
+			expect(scratch.innerHTML).to.equal(span('child'));
 			expect(maybe.base).to.equalNode(null, 'swapChildTag - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2282,7 +2269,7 @@ describe('Components', () => {
 			toggleMaybeNull();
 			rerender();
 
-			expect(scratch.innerHTML).to.equal([p('child')].join(''));
+			expect(scratch.innerHTML).to.equal(p('child'));
 			expect(maybe.base).to.equalNode(null, 'toggleMaybe - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2300,7 +2287,7 @@ describe('Components', () => {
 			swapChildTag();
 			rerender();
 
-			expect(scratch.innerHTML).to.equal([span('child')].join(''));
+			expect(scratch.innerHTML).to.equal(span('child'));
 			expect(maybe.base).to.equalNode(null, 'swapChildTag - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2329,7 +2316,7 @@ describe('Components', () => {
 				scratch
 			);
 
-			expect(scratch.innerHTML).to.equal([p('child')].join(''));
+			expect(scratch.innerHTML).to.equal(p('child'));
 			expect(maybe.base).to.equalNode(null, 'initial - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2341,7 +2328,7 @@ describe('Components', () => {
 			swapChildTag();
 			rerender();
 
-			expect(scratch.innerHTML).to.equal([span('child')].join(''));
+			expect(scratch.innerHTML).to.equal(span('child'));
 			expect(maybe.base).to.equalNode(null, 'swapChildTag - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2416,7 +2403,7 @@ describe('Components', () => {
 			toggleMaybeNull();
 			rerender();
 
-			expect(scratch.innerHTML).to.equal([p('child')].join(''));
+			expect(scratch.innerHTML).to.equal(p('child'));
 			expect(maybe.base).to.equalNode(null, 'toggleMaybe - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2453,7 +2440,7 @@ describe('Components', () => {
 				scratch
 			);
 
-			expect(scratch.innerHTML).to.equal([p('child')].join(''));
+			expect(scratch.innerHTML).to.equal(p('child'));
 			expect(maybe.base).to.equalNode(null, 'initial - maybe.base');
 			expect(child.base).to.equalNode(
 				scratch.firstChild,
@@ -2497,8 +2484,13 @@ describe('Components', () => {
 			);
 			render(divVNode, scratch);
 
+			// TODO: Consider rewriting test to not rely on internal properties
+			// and instead capture user-facing bug that would occur if this
+			// behavior were broken
+			const domProp = '__e' in divVNode ? '__e' : '_dom';
+
 			expect(scratch.innerHTML).to.equal('<div><p>child</p></div>');
-			expect(divVNode._dom).to.equalNode(
+			expect(divVNode[domProp]).to.equalNode(
 				scratch.firstChild,
 				'initial - divVNode._dom'
 			);
@@ -2511,7 +2503,7 @@ describe('Components', () => {
 			rerender();
 
 			expect(scratch.innerHTML).to.equal('<div><span>child</span></div>');
-			expect(divVNode._dom).to.equalNode(
+			expect(divVNode[domProp]).to.equalNode(
 				scratch.firstChild,
 				'swapChildTag - divVNode._dom'
 			);
@@ -2552,6 +2544,63 @@ describe('Components', () => {
 			expect(() => rerender()).to.not.throw();
 			expect(scratch.innerHTML).to.equal('');
 		});
+
+		it('setState callbacks should have latest state, even when called in render', () => {
+			let callbackState;
+			let i = 0;
+
+			class Foo extends Component {
+				constructor(props) {
+					super(props);
+					this.state = { foo: 'bar' };
+				}
+				render() {
+					// So we don't get infinite loop
+					if (i++ === 0) {
+						this.setState({ foo: 'baz' }, () => {
+							callbackState = this.state;
+						});
+					}
+					return String(this.state.foo);
+				}
+			}
+
+			render(<Foo />, scratch);
+			expect(scratch.innerHTML).to.equal('bar');
+
+			rerender();
+			expect(scratch.innerHTML).to.equal('baz');
+			expect(callbackState).to.deep.equal({ foo: 'baz' });
+		});
+
+		// #2716
+		it('should work with readonly state', () => {
+			let update;
+			class Foo extends Component {
+				constructor(props) {
+					super(props);
+					this.state = { foo: 'bar' };
+					update = () =>
+						this.setState(prev => {
+							Object.defineProperty(prev, 'foo', {
+								writable: false
+							});
+
+							return prev;
+						});
+				}
+
+				render() {
+					return <div />;
+				}
+			}
+
+			render(<Foo />, scratch);
+			expect(() => {
+				update();
+				rerender();
+			}).to.not.throw();
+		});
 	});
 
 	describe('forceUpdate', () => {
@@ -2578,6 +2627,24 @@ describe('Components', () => {
 			expect(() => forceUpdate()).to.not.throw();
 			expect(() => rerender()).to.not.throw();
 			expect(scratch.innerHTML).to.equal('');
+		});
+
+		it('should update old dom on forceUpdate in a lifecycle', () => {
+			let i = 0;
+			class App extends Component {
+				componentWillReceiveProps() {
+					this.forceUpdate();
+				}
+				render() {
+					if (i++ == 0) return <div>foo</div>;
+					return <div>bar</div>;
+				}
+			}
+
+			render(<App />, scratch);
+			render(<App />, scratch);
+
+			expect(scratch.innerHTML).to.equal('<div>bar</div>');
 		});
 	});
 });
